@@ -6,6 +6,7 @@ Python 负责:
   1. B+ 树引擎:插入/删除/查找/范围查询,含页分裂、键上浮、借键、合并、根收缩
   2. 步骤编排:每个操作拆成可逐步回放的叙述步骤(定位 → 写入/分裂 → 回表 ...)
   3. 页面渲染:把两棵 B+ 树(聚簇索引 + 二级索引)画成 SVG,拼装成 HTML
+  4. 树高对决:把「红黑树 20+ 层 vs B+ 树 3 层」画成等比例页塔(每个色块 = 1 页 = 1 次 IO)
 
 运行:
   .venv\\Scripts\\python.exe -m streamlit run bptree_visualizer.py
@@ -14,6 +15,7 @@ from __future__ import annotations
 
 import copy
 import html as _html
+import math
 import random
 import time
 
@@ -703,7 +705,119 @@ def build_page(snap_pk, snap_sec, hl_pk=None, hl_sec=None, conn_text=None, conn_
 
 
 # ============================================================
-# 4. Streamlit UI
+# 4. 树高对决渲染:红黑树 vs B+ 树(每个色块 = 1 页 = 1 次磁盘 IO)
+# ============================================================
+def _fmt_cn(n):
+    """大数中文数量级:'1678 万' / '10 亿'(图注用,2~4 位有效数字)"""
+    if n >= 1e8:
+        v = n / 1e8
+        return f'{v:.0f} 亿' if v >= 10 else f'{v:.1f} 亿'
+    if n >= 1e4:
+        v = n / 1e4
+        return f'{v:.0f} 万' if v >= 10 else f'{v:.1f} 万'
+    if n >= 1e3:
+        return f'{round(n / 1e3):.0f} 千'
+    return str(n)
+
+
+def bp_height(n_rows, m):
+    """装下 n_rows 行、每页 m 键的 B+ 树最少层数:m^h ≥ n_rows(整数推导,不吃浮点 log 边界误差)"""
+    h, cap = 1, m
+    while cap < n_rows:
+        cap *= m
+        h += 1
+    return h
+
+
+def render_height_race(n_rows, m, width=940):
+    """「树高对决」页塔:每个色块 = 1 个 16KB 页 = 1 次磁盘 IO,塔高 = 查 1 行要读的页数。
+
+    红黑树/二叉树:每页只放 1 个键,最少层数 h 满足 2^h - 1 ≥ n;B+ 树:每页 m 键,m^h ≥ n。
+    """
+    rb = n_rows.bit_length()      # 二叉结构最少层数
+    bp = bp_height(n_rows, m)     # B+ 树最少层数
+    u = 16                        # 每层厚度(两塔相同:大家都是同样大小的一页)
+    tx1, tw, tx2 = 150, 220, 600
+    top = 64
+    H = top + rb * u + 58
+
+    RED, DARK, GREEN = '#dc2626', '#111827', '#16a34a'
+    p = [f'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 {width} {H}" '
+         f'width="100%" height="{H}" role="img" font-family="-apple-system,Segoe UI,Roboto,sans-serif">',
+         # 白色圆角底:深浅主题下文字都按"白卡片"对比度设计(与树节点卡片同款)
+         f'<rect x="0" y="0" width="{width}" height="{H}" rx="12" fill="{CARD}"/>',
+         f'<defs><marker id="raceArr" viewBox="0 0 8 8" refX="7" refY="4" markerWidth="7" '
+         f'markerHeight="7" orient="auto"><path d="M0,0 L8,4 L0,8 z" fill="{MUT}"/></marker></defs>']
+
+    # ---- 塔顶标题 ----
+    p.append(f'<text x="{tx1 + tw / 2}" y="20" text-anchor="middle" font-size="13" '
+             f'font-weight="600" fill="{RED}">红黑树 / 二叉树 · 每页 1 键</text>')
+    p.append(f'<text x="{tx1 + tw / 2}" y="40" text-anchor="middle" font-size="12" '
+             f'fill="{MUT}">树高 {rb} 层 = 查 1 行 {rb} 次磁盘 IO</text>')
+    p.append(f'<text x="{tx2 + tw / 2}" y="20" text-anchor="middle" font-size="13" '
+             f'font-weight="600" fill="#1d4ed8">B+ 树 · 每页 {m} 键</text>')
+    p.append(f'<text x="{tx2 + tw / 2}" y="40" text-anchor="middle" font-size="12" '
+             f'fill="{MUT}">树高 {bp} 层 = 查 1 行 {bp} 次磁盘 IO</text>')
+
+    # ---- 左塔:红黑树(红黑交替的薄页,一层一页一路读到底) ----
+    for k in range(rb):
+        p.append(f'<rect x="{tx1}" y="{top + k * u}" width="{tw}" height="{u}" '
+                 f'fill="{RED if k % 2 == 0 else DARK}"/>')
+    p.append(f'<rect x="{tx1}" y="{top}" width="{tw}" height="{rb * u}" fill="none" stroke="{BORDER}"/>')
+    p.append(f'<text x="{tx1 - 10}" y="{top + u / 2 + 4}" text-anchor="end" font-size="11" fill="{MUT}">根</text>')
+    p.append(f'<text x="{tx1 - 10}" y="{top + rb * u - u / 2 + 4}" text-anchor="end" '
+             f'font-size="11" fill="{MUT}">第{rb}层</text>')
+    p.append(f'<line x1="122" y1="{top}" x2="122" y2="{top + rb * u}" stroke="{MUT}" marker-end="url(#raceArr)"/>')
+    arrow_y = top + rb * u / 2
+    p.append(f'<text x="114" y="{arrow_y:.0f}" transform="rotate(-90 114 {arrow_y:.0f})" text-anchor="middle" '
+             f'font-size="11" fill="{MUT}">查询一行:自上而下逐层读</text>')
+    # 里程碑:第 k 层时二叉结构最多覆盖 2^k 行 —— 每加一层只翻倍
+    for k in sorted({k for k in (10, 20, rb) if k <= rb}):
+        y = top + (k - 1) * u + u / 2 + 4
+        ok = ' ✓' if 2 ** k - 1 >= n_rows else ''
+        p.append(f'<line x1="{tx1 + tw + 2}" y1="{y - 4}" x2="{tx1 + tw + 10}" y2="{y - 4}" stroke="{MUT}"/>')
+        p.append(f'<text x="{tx1 + tw + 14}" y="{y}" font-size="11" fill="{FG}">'
+                 f'第{k}层 ≈ {_fmt_cn(2 ** k)}行{ok}</text>')
+
+    # ---- 右塔:B+ 树(少而厚的页:路标层放 m 键,叶子层放整行) ----
+    for k in range(1, bp + 1):
+        y = top + (k - 1) * u
+        if k < bp:
+            color, label = ('#2563eb' if k % 2 else '#1d4ed8'), f'路标 · 1 页 = {m} 键'
+        else:
+            color, label = GREEN, '叶子页 · 整行数据在这里'
+        p.append(f'<rect x="{tx2}" y="{y}" width="{tw}" height="{u}" fill="{color}"/>')
+        p.append(f'<text x="{tx2 + tw / 2}" y="{y + u / 2 + 4}" text-anchor="middle" '
+                 f'font-size="11" fill="#ffffff">{label}</text>')
+        ym = y + u / 2 + 4
+        p.append(f'<line x1="{tx2 + tw + 2}" y1="{ym - 4}" x2="{tx2 + tw + 10}" y2="{ym - 4}" stroke="{MUT}"/>')
+        ok = ' ✓' if m ** k >= n_rows else ''
+        p.append(f'<text x="{tx2 + tw + 14}" y="{ym}" font-size="11" fill="{FG}">≤{_fmt_cn(m ** k)}行{ok}</text>')
+    p.append(f'<rect x="{tx2}" y="{top}" width="{tw}" height="{bp * u}" fill="none" stroke="{BORDER}"/>')
+
+    # ---- B+ 塔下方结论(塔矮,底下正好空出来) ----
+    yb2 = top + bp * u + 30
+    p.append(f'<text x="{tx2 + tw / 2}" y="{yb2}" text-anchor="middle" font-size="13" '
+             f'font-weight="600" fill="#15803d">✓ {_fmt_cn(n_rows)}行只需 {bp} 层</text>')
+    p.append(f'<text x="{tx2 + tw / 2}" y="{yb2 + 18}" text-anchor="middle" font-size="11" '
+             f'fill="{MUT}">全树上限 {_fmt_cn(m ** bp)}行 —— 还有巨大余量</text>')
+
+    # ---- VS 徽章 + 底部结论 + 图例 ----
+    vcy = top + rb * u / 2
+    p.append(f'<circle cx="485" cy="{vcy:.0f}" r="24" fill="#1c2430" stroke="#ffffff" stroke-width="2"/>')
+    p.append(f'<text x="485" y="{vcy:.0f}" text-anchor="middle" dominant-baseline="central" '
+             f'font-size="14" font-weight="700" fill="#ffffff">VS</text>')
+    yb = top + rb * u + 24
+    p.append(f'<text x="{tx1 + tw / 2}" y="{yb}" text-anchor="middle" font-size="12" '
+             f'font-weight="600" fill="{RED}">✗ 每页 1 键,每加一层覆盖只 ×2</text>')
+    p.append(f'<text x="{width / 2}" y="{yb + 22}" text-anchor="middle" font-size="11" '
+             f'fill="{MUT}">每个色块 = 1 个 16KB 页 = 1 次磁盘 IO · 塔的高度 = 查 1 行需要读的页数</text>')
+    p.append('</svg>')
+    return ''.join(p), H
+
+
+# ============================================================
+# 5. Streamlit UI
 # ============================================================
 st.set_page_config(page_title='B+ 树可视化 · bptree_visualizer',
                    page_icon='🌳', layout='wide')
@@ -872,10 +986,58 @@ m4.metric('阶数(每页最多键数)', demo.M)
 if st.session_state.results:
     st.dataframe(st.session_state.results, use_container_width=True, hide_index=True)
 
+# ---------------- 树高对决:为什么不用二叉树 / 红黑树 ----------------
+st.divider()
+st.subheader('🆚 树高对决:为什么数据库不用二叉树 / 红黑树?')
+st.caption('「1000 万数据,红黑树高约 23 层,每层一次磁盘 IO 就是 23 次;B+ 树 3 层搞定。」'
+           '下面的塔把这句话画出来 —— 每个色块 = 1 个 16KB 页 = 1 次磁盘 IO。')
+N_OPTS = [1_000, 10_000, 100_000, 1_000_000, 10_000_000, 100_000_000]
+N_LBL = {1_000: '1 千行', 10_000: '1 万行', 100_000: '10 万行', 1_000_000: '100 万行',
+         10_000_000: '1000 万行', 100_000_000: '1 亿行'}
+DISKS = {'机械盘 HDD': 10.0, '固态 SSD': 0.1}   # 选项必须是字符串:元组会被 select_slider 当成多选列表
+ca, cb, cc = st.columns(3)
+n_rows = ca.select_slider('数据量', options=N_OPTS, format_func=N_LBL.get, value=10_000_000)
+m_fan = cb.select_slider('B+ 树每页键数(扇出)', options=[10, 50, 100, 500, 1000],
+                         format_func=lambda v: f'{v} 键/页', value=1000)
+dname = cc.select_slider('磁盘(单次 IO 延迟)', options=list(DISKS),
+                         format_func=lambda d: f'{d} · {DISKS[d]:g} ms/次', value='机械盘 HDD')
+rb_h = n_rows.bit_length()               # 二叉结构最少层数:2^h - 1 ≥ n
+bp_h = bp_height(n_rows, m_fan)          # B+ 树最少层数:m^h ≥ n
+lat = DISKS[dname]
+
+
+def _ms(x):
+    return f'{x:.0f} ms' if x >= 10 else f'{x:g} ms'
+
+
+q1, q2, q3, q4 = st.columns(4)
+q1.metric('红黑树树高', f'{rb_h} 层',
+          delta=f'log₂({_fmt_cn(n_rows)}) ≈ {math.log2(n_rows):.1f}', delta_color='off')
+q2.metric('B+ 树树高', f'{bp_h} 层', delta=f'比红黑树矮 {rb_h - bp_h} 层', delta_color='off')
+q3.metric('查 1 行磁盘 IO', f'{rb_h} 次 → {bp_h} 次', delta=f'省 {rb_h - bp_h} 次', delta_color='off')
+q4.metric(f'单行查询耗时({dname})', f'{_ms(rb_h * lat)} → {_ms(bp_h * lat)}',
+          delta=f'快 {rb_h / bp_h:.0f} 倍', delta_color='off')
+
+race_svg, race_h = render_height_race(n_rows, m_fan)
+components.html(race_svg, height=race_h + 6, scrolling=False)
+
+st.markdown(f'''
+| | 红黑树 / 二叉树 | B+ 树 |
+|---|---|---|
+| 每个 16KB 页放几个键 | 1 | {m_fan} |
+| {N_LBL[n_rows]}的树高 | {rb_h} 层 ≈ {rb_h} 次磁盘 IO | {bp_h} 层 ≈ {bp_h} 次磁盘 IO |
+| 每多一层,覆盖行数变成 | × 2 | × {m_fan} |
+| 为谁而生 | 内存结构(省 CPU 比较次数) | 磁盘结构(省 IO 次数) |
+''')
+st.caption('📌 现实修正:InnoDB 的根页和上层路标页常驻 Buffer Pool,实际磁盘 IO 往往更少;'
+           '红黑树在内存里非常快(JDK HashMap、Linux 内核都在用),它输的不是比较次数,'
+           '而是「每次比较都可能要多读一页磁盘」的代价 —— 盘上查目录,页越胖、树越矮越好。')
+
 with st.expander('📖 原理速览:为什么数据库都爱 B+ 树'):
     st.markdown('''
 - **索引 ≠ 数据**:整行数据只存在**聚簇索引(主键树)**的叶子页里;二级索引只是一张"目录卡",叶子上只有 `索引键 → 主键` 两个小字段。
 - **查找 = 树下降**:从根开始,内部节点只放"路标键"(子树最小键的副本),每层做一次比较,O(log n) 次比较直达叶子。
+- **为什么不用二叉树/红黑树**:二叉结构一页只放 1 个键,每层覆盖只 ×2,1000 万行要 20 多层、20 多次磁盘 IO;B+ 树一页放上千键,每层覆盖 ×1000,3 层就覆盖 10 亿行 —— 数据库要的是"矮胖",不是"聪明"。
 - **插入可能分裂**:叶子页满(键数 > 阶数)→ 一分为二,分隔键**复制**上浮当路标;父节点也满就继续分裂,根分裂则树长高一层 —— 所有的叶子永远在同一层。
 - **删除可能借键/合并**:删到低于下限就向兄弟借 1 个键,兄弟也不够就合并,父节点连锁收缩,极端时树高 -1。
 - **回表**:走二级索引只拿到主键,必须再查一次聚簇索引取整行 —— 所以有"索引覆盖"和"最左前缀"这些优化话题。
