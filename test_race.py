@@ -5,7 +5,7 @@ import warnings
 
 sys.path.insert(0, r'D:\github\bptree_visualizer')
 warnings.filterwarnings('ignore')
-from bptree_visualizer import bp_height, render_height_race, _fmt_cn
+from bptree_visualizer import bp_height, render_height_race, render_race_layout, _fmt_cn
 
 # 层数公式:与手算对照,并用不等式验证"少一层必装不下、当前层必装得下"
 cases = [
@@ -27,10 +27,18 @@ for n, m, rb_want, bp_want in cases:
     svg, h = render_height_race(n, m)
     assert svg.startswith('<svg') and svg.rstrip().endswith('</svg>') and h > 100, f'n={n}: SVG 异常'
     assert f'树高 {bp} 层' in svg and f'树高 {rb} 层' in svg, f'n={n}: SVG 缺标题文字'
+    # 摆放对照图冒烟:层数/页数标注要进图
+    lsvg, lh = render_race_layout(n, m)
+    assert lsvg.startswith('<svg') and lsvg.rstrip().endswith('</svg>') and lh > 100, f'n={n}: 摆放图异常'
+    assert f'一共 {bp} 层' in lsvg or f'只要 {bp} 层' in lsvg, f'n={n}: 摆放图缺层数标注'
+    leaf_pages = max(1, -(-n // m))
+    assert _fmt_cn(leaf_pages) in lsvg, f'n={n} m={m}: 摆放图缺叶子页数 {_fmt_cn(leaf_pages)}'
 
 # 中文数量级格式化
 assert _fmt_cn(16_777_216) == '1678 万'
 assert _fmt_cn(1_000_000_000) == '10 亿'
 assert _fmt_cn(1024) == '1 千'
 assert _fmt_cn(999) == '999'
-print('RACE OK — 层数公式 7 组用例(含不等式验证)+ SVG 冒烟 + 数量级格式化全部通过')
+assert _fmt_cn(10_000) == '1 万'
+assert _fmt_cn(15_000) == '1.5 万'
+print('RACE OK — 层数公式 7 组用例(含不等式验证)+ 两张 SVG 冒烟 + 数量级格式化全部通过')

@@ -708,13 +708,15 @@ def build_page(snap_pk, snap_sec, hl_pk=None, hl_sec=None, conn_text=None, conn_
 # 4. 树高对决渲染:红黑树 vs B+ 树(每个色块 = 1 页 = 1 次磁盘 IO)
 # ============================================================
 def _fmt_cn(n):
-    """大数中文数量级:'1678 万' / '10 亿'(图注用,2~4 位有效数字)"""
+    """大数中文数量级:'1678 万' / '10 亿'(图注用,2~4 位有效数字;整数不加 .0)"""
     if n >= 1e8:
         v = n / 1e8
-        return f'{v:.0f} 亿' if v >= 10 else f'{v:.1f} 亿'
+        s = f'{v:.0f}' if (v >= 10 or v == int(v)) else f'{v:.1f}'
+        return f'{s} 亿'
     if n >= 1e4:
         v = n / 1e4
-        return f'{v:.0f} 万' if v >= 10 else f'{v:.1f} 万'
+        s = f'{v:.0f}' if (v >= 10 or v == int(v)) else f'{v:.1f}'
+        return f'{s} 万'
     if n >= 1e3:
         return f'{round(n / 1e3):.0f} 千'
     return str(n)
@@ -727,6 +729,142 @@ def bp_height(n_rows, m):
         cap *= m
         h += 1
     return h
+
+
+def render_race_layout(n_rows, m, width=940):
+    """「数据摆放对照」:同样多的行,两棵树把键/数据摆在哪。
+
+    左·二叉树:画出真实的前 4 层(节点里就是键的样本值)+ 收缩点阵,
+              传达"1 节点 = 1 页 = 1 键,数据散在整棵树,一共 rb 层"。
+    右·B+ 树:画出真实的分页摆法 —— 根页路标 → 第 2 层页 → 叶子页(键→整行,链表相连),
+              标注每层页数与覆盖行数,传达"1 页塞 m 键,数据全在叶子,共 bp 层"。
+    """
+    rb = n_rows.bit_length()
+    bp = bp_height(n_rows, m)
+    leaf_pages = max(1, -(-n_rows // m))       # 叶子页数 = ceil(n/m)
+    mid_pages = max(1, -(-leaf_pages // m))    # 第 2 层页数 = ceil(叶子页/m)
+    PW = 435                                   # 每个面板宽
+    LX, RX = 20, 485                           # 面板左边缘
+    H = 336
+    RED, DARK, GREEN_T = '#dc2626', '#111827', '#15803d'
+
+    def box(x, y, w, h, stroke):
+        return (f'<rect x="{x:.0f}" y="{y:.0f}" width="{w:.0f}" height="{h:.0f}" rx="6" '
+                f'fill="#ffffff" stroke="{stroke}" stroke-width="1.4"/>')
+
+    def chip(x, y, w, h, label, fs=9):
+        return (f'<rect x="{x:.0f}" y="{y:.0f}" width="{w:.0f}" height="{h:.0f}" rx="4" '
+                f'fill="{CHIP}" stroke="{BORDER}" stroke-width="1"/>'
+                f'<text x="{x + w / 2:.0f}" y="{y + h / 2 + fs * 0.36:.0f}" text-anchor="middle" '
+                f'font-size="{fs}" fill="{FG}">{_html.escape(str(label))}</text>')
+
+    def text(x, y, s, fs=11, fill=MUT, weight=False):
+        wattr = ' font-weight="600"' if weight else ''
+        return (f'<text x="{x:.0f}" y="{y:.0f}" text-anchor="middle" font-size="{fs}"'
+                f'{wattr} fill="{fill}">{_html.escape(s)}</text>')
+
+    p = [f'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 {width} {H}" '
+         f'width="100%" height="{H}" role="img" font-family="-apple-system,Segoe UI,Roboto,sans-serif">',
+         f'<rect x="0" y="0" width="{width}" height="{H}" rx="12" fill="{CARD}"/>',
+         f'<defs><marker id="raceArrL" viewBox="0 0 8 8" refX="7" refY="4" markerWidth="6" '
+         f'markerHeight="6" orient="auto"><path d="M0,0 L8,4 L0,8 z" fill="{MUT}"/></marker></defs>']
+
+    # ============ 左:二叉树 —— 键就摆在一个个"一键节点"里 ============
+    p.append(text(LX + PW / 2, 22, '红黑树 / 二叉树 · 1 节点 = 1 页 = 1 键', 13, RED, True))
+    p.append(text(LX + PW / 2, 40, f'高 {rb} 层 · 键(和整行数据)散在每一层', 11))
+
+    def bx(level, i):  # 第 level 层第 i 个节点(0 起)的中心 x
+        return LX + (i + 0.5) * PW / 2 ** (level - 1)
+
+    LY, BH = {1: 62, 2: 96, 3: 130, 4: 164}, 22
+    BW = {1: 64, 2: 64, 3: 58, 4: 52}
+    for level in (1, 2, 3, 4):
+        for i in range(2 ** (level - 1)):
+            cx = bx(level, i)
+            p.append(box(cx - BW[level] / 2, LY[level], BW[level], BH, BORDER))
+            p.append(text(cx, LY[level] + BH / 2 + 3,
+                          _fmt_cn(max(1, n_rows * (2 * i + 1) // 2 ** level)), 8.5, FG))
+    for level in (1, 2, 3):  # 父→子连线
+        for i in range(2 ** level):
+            p.append(f'<line x1="{bx(level, i // 2):.0f}" y1="{LY[level] + BH}" '
+                     f'x2="{bx(level + 1, i):.0f}" y2="{LY[level + 1]}" stroke="{BORDER}"/>')
+    for i in range(16):  # 第 5 层:16 个小点
+        p.append(f'<circle cx="{bx(5, i):.0f}" cy="198" r="7" '
+                 f'fill="{RED if i % 2 == 0 else DARK}" opacity="0.85"/>')
+    for i in range(32):  # 第 6 层:32 个更小的点
+        p.append(f'<circle cx="{bx(6, i):.0f}" cy="226" r="4" fill="{DARK}" opacity="0.7"/>')
+    p.append(f'<rect x="30" y="244" width="415" height="22" rx="8" fill="none" '
+             f'stroke="{MUT}" stroke-dasharray="4 3"/>')
+    p.append(text(LX + PW / 2, 259, f'⋯ 每层节点 ×2 · 一路堆到第 {rb} 层 ⋯', 11))
+    p.append(text(LX + PW / 2, 292, f'✗ 第 {rb} 层才装下 {_fmt_cn(n_rows)} 行 · 每层读 1 页 = {rb} 次 IO',
+                  12, RED, True))
+    p.append(text(LX + PW / 2, 314, '16KB 的一页只放 1 个键 —— 又高又瘦', 11))
+
+    # ============ 右:B+ 树 —— 一页塞满键,数据全在叶子 ============
+    rcx = RX + PW / 2
+    GREEN_T = '#15803d'
+
+    def leaf_row(y, n_boxes=4, bw=98, gap=10):
+        x0 = RX + 12
+        for j in range(n_boxes):
+            lx = x0 + j * (bw + gap)
+            p.append(box(lx, y, bw, 48, GREEN))
+            for r_, labs in enumerate((('1→行', '2→行'), ('3→行', '…'))):
+                for c_, lab in enumerate(labs):
+                    p.append(chip(lx + 6 + c_ * 45, y + 6 + r_ * 19, 41, 15, lab, 8))
+            if j < n_boxes - 1:  # 叶子链表
+                p.append(f'<line x1="{lx + bw + 1}" y1="{y + 24}" x2="{lx + bw + gap - 1}" y2="{y + 24}" '
+                         f'stroke="{MUT}" stroke-dasharray="3 2" marker-end="url(#raceArrL)"/>')
+        return x0
+
+    p.append(text(rcx, 22, f'B+ 树 · 1 页 = {m} 键', 13, '#1d4ed8', True))
+    p.append(text(rcx, 40, f'高 {bp} 层 · 数据全部住在叶子层', 11))
+
+    def fk(f):
+        return _fmt_cn(max(1, int(n_rows * f)))
+
+    if bp == 1:  # 全部数据装进根一页
+        p.append(box(rcx - 150, 64, 300, 48, GREEN))
+        for j, lab in enumerate(('1→行', '2→行', '3→行', '…')):
+            p.append(chip(rcx - 142 + j * 72, 76, 64, 24, lab, 9))
+        p.append(text(rcx, 136, f'根 = 叶子 · {_fmt_cn(n_rows)} 行全在这一页', 12, GREEN_T, True))
+    else:
+        p.append(box(rcx - 150, 60, 300, 38, BLUE))  # 根页:路标键
+        for j, lab in enumerate((fk(0.25), fk(0.5), fk(0.75), '…')):
+            p.append(chip(rcx - 142 + j * 72, 68, 64, 22, lab, 9))
+        p.append(text(rcx, 114, f'根 · 1 页路标 · ≤{_fmt_cn(m)}行', 11, FG))
+        leaf_y = 226
+        if bp == 2:  # 根下面直接是叶子
+            x0 = leaf_row(140)
+            for j in range(3):
+                p.append(f'<line x1="{rcx:.0f}" y1="98" x2="{x0 + j * 108 + 49:.0f}" y2="140" stroke="{BORDER}"/>')
+            p.append(text(rcx, 210, f'叶子(第 2 层)· {_fmt_cn(leaf_pages)} 页 · 整行数据在这里',
+                          12, GREEN_T, True))
+        else:
+            for j in range(3):  # 第 2 层样本 3 页
+                mx = RX + 12 + j * 140
+                p.append(f'<line x1="{rcx:.0f}" y1="98" x2="{mx + 65:.0f}" y2="134" stroke="{BORDER}"/>')
+                p.append(box(mx, 134, 130, 32, BLUE))
+                for c_, lab in enumerate((fk((2 * j + 1) / 8), fk((2 * j + 2) / 8), '…')):
+                    p.append(chip(mx + 6 + c_ * 41, 139, 37, 22, lab, 8))
+            p.append(text(rcx, 182, f'第 2 层 · {_fmt_cn(mid_pages)} 页路标 · ≤{_fmt_cn(m ** 2)}行', 11, FG))
+            # 第 2 层 → 叶子的连线先画,后面的"⋯"收缩带用白底盖住交汇处(层级折叠的观感)
+            for j in range(3):
+                p.append(f'<line x1="{RX + 12 + j * 140 + 65:.0f}" y1="166" '
+                         f'x2="{RX + 12 + j * 108 + 49:.0f}" y2="{leaf_y}" stroke="{BORDER}"/>')
+            if bp > 3:
+                p.append(f'<rect x="{RX + 10}" y="194" width="415" height="20" rx="8" fill="{CARD}" '
+                         f'stroke="{MUT}" stroke-dasharray="4 3"/>')
+                p.append(text(rcx, 208, f'⋯ 每层 ×{m} · 一共 {bp} 层 ⋯', 10.5))
+            x0 = leaf_row(leaf_y)
+            p.append(text(rcx, leaf_y + 66, f'叶子(第 {bp} 层)· {_fmt_cn(leaf_pages)} 页 · 整行数据在这里',
+                          12, GREEN_T, True))
+    p.append(text(rcx, 314, f'一页塞 {m} 键 → 树只有 {bp} 层 · 查 1 行只读 {bp} 页', 11))
+
+    p.append(text(width / 2, H - 8,
+                  f'同一份 {_fmt_cn(n_rows)} 行:左 · 每页 1 键堆 {rb} 层 | 右 · 每页 {m} 键只要 {bp} 层', 11))
+    p.append('</svg>')
+    return ''.join(p), H
 
 
 def render_height_race(n_rows, m, width=940):
@@ -799,8 +937,12 @@ def render_height_race(n_rows, m, width=940):
     yb2 = top + bp * u + 30
     p.append(f'<text x="{tx2 + tw / 2}" y="{yb2}" text-anchor="middle" font-size="13" '
              f'font-weight="600" fill="#15803d">✓ {_fmt_cn(n_rows)}行只需 {bp} 层</text>')
+    cap = m ** bp
+    ratio = cap / n_rows
+    note = ('—— 刚好装下' if ratio < 1.5 else
+            '—— 还有巨大余量' if ratio >= 10 else f'—— 余量约 {ratio:.0f} 倍')
     p.append(f'<text x="{tx2 + tw / 2}" y="{yb2 + 18}" text-anchor="middle" font-size="11" '
-             f'fill="{MUT}">全树上限 {_fmt_cn(m ** bp)}行 —— 还有巨大余量</text>')
+             f'fill="{MUT}">全树上限 {_fmt_cn(cap)}行 {note}</text>')
 
     # ---- VS 徽章 + 底部结论 + 图例 ----
     vcy = top + rb * u / 2
@@ -862,10 +1004,20 @@ if order != st.session_state.order:
 
 sb.divider()
 with sb.expander('🌱 插入一行'):
+    if st.button('🎲 随机插一行(id 自动,不用填)', key='do_ins_rand', type='primary'):
+        used = {v[0] for v in demo.rows.values()}
+        pool = [n for n in demo.NAMES if n not in used]
+        rid = demo.next_id()
+        name = random.choice(pool) if pool else f'u{rid}'
+        age = random.randint(18, 60)
+        st.session_state.steps = demo.op_insert(rid, name, age)
+        st.session_state.idx, st.session_state.play, st.session_state.results = 0, False, None
+        st.session_state.history.append(f'🌱 随机插入 (id={rid}, "{name}", {age})')
+    sb.caption('想自己指定 id / name 也行:')
     ins_id = st.number_input('主键 id', 1, 99999, value=demo.next_id(), key='ins_id')
     ins_name = st.text_input('name(二级索引键,不可重复)', value=demo.next_name(), key='ins_name')
     ins_age = st.number_input('age', 1, 120, 25, key='ins_age')
-    if st.button('插入', key='do_insert', type='primary'):
+    if st.button('插入', key='do_insert'):
         if ins_id in demo.rows:
             sb.warning(f'id={ins_id} 已存在,换一个。')
         elif not ins_name.strip():
@@ -927,7 +1079,7 @@ with sb.expander('📏 范围查询(叶子链表扫描)'):
 
 sb.divider()
 c_a, c_b = sb.columns(2)
-if c_a.button('🎲 随机填充', key='do_rand'):
+if c_a.button('🎲 随机填 6 行', key='do_rand'):
     st.session_state.steps = demo.op_random(6)
     st.session_state.idx, st.session_state.play, st.session_state.results = 0, False, None
     st.session_state.history.append('🎲 随机插入 6 行')
@@ -1018,7 +1170,12 @@ q3.metric('查 1 行磁盘 IO', f'{rb_h} 次 → {bp_h} 次', delta=f'省 {rb_h 
 q4.metric(f'单行查询耗时({dname})', f'{_ms(rb_h * lat)} → {_ms(bp_h * lat)}',
           delta=f'快 {rb_h / bp_h:.0f} 倍', delta_color='off')
 
+layout_svg, layout_h = render_race_layout(n_rows, m_fan)
+st.markdown(f'**🧩 先看数据是怎么摆的**(左·每节点一键 | 右·每页塞满键,均按当前 {_fmt_cn(n_rows)} 行算):')
+components.html(layout_svg, height=layout_h + 6, scrolling=False)
+
 race_svg, race_h = render_height_race(n_rows, m_fan)
+st.markdown('**📏 再换算成"每层读一页"的塔**(塔高 = 查 1 行的磁盘 IO 次数):')
 components.html(race_svg, height=race_h + 6, scrolling=False)
 
 st.markdown(f'''
