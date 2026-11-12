@@ -591,7 +591,11 @@ def render_tree(view, hl, kind='c', width=940):
     gap = (width - 2 * pad - total) / (n - 1) if n > 1 else 0
     maxm = max([len(l.keys) for l in leaves] + [1])
     leaf_h = 12 + maxm * 26 if vert else 50
-    int_h, leaf_y, top = 36, 56, 8
+    # 多层支持:每个内部层各占一行(此前所有内部层叠在一行,3 层以上的树画不出来)
+    n_int = len(lv) - 1
+    int_h, top, vgap = 36, 8, 18
+    level_y = [top + d * (int_h + vgap) for d in range(n_int)]
+    leaf_y = top + n_int * (int_h + vgap)
     H = int(leaf_y + leaf_h + 28)
 
     cx = {}
@@ -612,24 +616,26 @@ def render_tree(view, hl, kind='c', width=940):
          f'width="100%" height="{H}" role="img" font-family="-apple-system,Segoe UI,Roboto,sans-serif">',
          f'<defs><marker id="arr{kind}" viewBox="0 0 8 8" refX="7" refY="4" markerWidth="7" '
          f'markerHeight="7" orient="auto"><path d="M0,0 L8,4 L0,8 z" fill="{MUT}"/></marker></defs>']
+    ys = level_y + [leaf_y]
     for d in range(len(lv) - 1):
         for pn in lv[d]:
             for c in pn.children:
                 on = f'{pn.id}>{c.id}' in edges
-                p.append(f'<line x1="{cx[pn.id]:.0f}" y1="{top + int_h}" x2="{cx[c.id]:.0f}" '
-                         f'y2="{leaf_y}" stroke="{BLUE if on else BORDER}" '
+                p.append(f'<line x1="{cx[pn.id]:.0f}" y1="{ys[d] + int_h}" x2="{cx[c.id]:.0f}" '
+                         f'y2="{ys[d + 1]}" stroke="{BLUE if on else BORDER}" '
                          f'stroke-width="{2.2 if on else 1.2}"/>')
     for d in range(len(lv) - 1):
+        yb = ys[d]
         for pn in lv[d]:
             on = pn.id in nodes
-            p.append(f'<rect x="{pn._x:.0f}" y="{top}" width="{pn._w:.0f}" height="{int_h}" rx="8" '
+            p.append(f'<rect x="{pn._x:.0f}" y="{yb}" width="{pn._w:.0f}" height="{int_h}" rx="8" '
                      f'fill="{CARD}" stroke="{BLUE if on else BORDER}" '
                      f'stroke-width="{1.6 if on else 1.2}"/>')
             for i, k in enumerate(pn.keys):
-                p.append(_chip(pn._x + 9 + i * 34, top + 6, 28, 24, k,
+                p.append(_chip(pn._x + 9 + i * 34, yb + 6, 28, 24, k,
                                tip=f'路标键 {k}'))
     for li, l in enumerate(leaves):
-        letter = chr(65 + li)
+        letter = chr(65 + li) if li < 26 else str(li + 1)  # 超过 26 页后用数字,避免 [\]^` 乱码
         p.append(f'<text x="{cx[l.id]:.0f}" y="{leaf_y + leaf_h + 17}" text-anchor="middle" '
                  f'font-size="11" fill="{MUT}">页{letter}</text>')
         on, sp = l.id in nodes, l.id in split
@@ -1014,8 +1020,11 @@ with sb.expander('🌱 插入一行'):
         st.session_state.idx, st.session_state.play, st.session_state.results = 0, False, None
         st.session_state.history.append(f'🌱 随机插入 (id={rid}, "{name}", {age})')
     sb.caption('想自己指定 id / name 也行:')
-    ins_id = st.number_input('主键 id', 1, 99999, value=demo.next_id(), key='ins_id')
-    ins_name = st.text_input('name(二级索引键,不可重复)', value=demo.next_name(), key='ins_name')
+    # key 随行数变化:每次插入后 number_input/text_input 重建,默认值刷新为 next_id/next_name
+    ins_id = st.number_input('主键 id', 1, 99999, value=demo.next_id(),
+                             key=f'ins_id_{len(demo.rows)}')
+    ins_name = st.text_input('name(二级索引键,不可重复)', value=demo.next_name(),
+                             key=f'ins_name_{len(demo.rows)}')
     ins_age = st.number_input('age', 1, 120, 25, key='ins_age')
     if st.button('插入', key='do_insert'):
         if ins_id in demo.rows:
