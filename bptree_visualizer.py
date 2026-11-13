@@ -1021,15 +1021,25 @@ sb.caption(
 
 sb.divider()
 with sb.expander('🌱 插入一行'):
-    if st.button('🎲 随机插一行(id 自动,不用填)', key='do_ins_rand', type='primary'):
+    id_mode = sb.radio(
+        'id 取值方式',
+        ['乱序随机(1~50 里挑没用过的,能看到页被自然填满)',
+         '正序递增(新 id 加在最后,页停在分裂时的 3 键)'],
+        key='id_mode', label_visibility='collapsed')
+    if st.button('🎲 随机插一行(不用填)', key='do_ins_rand', type='primary'):
         used = {v[0] for v in demo.rows.values()}
         pool = [n for n in demo.NAMES if n not in used]
-        rid = demo.next_id()
+        if id_mode.startswith('乱序'):
+            free = [i for i in range(1, 51) if i not in used]
+            rid = random.choice(free) if free else demo.next_id()
+        else:
+            rid = demo.next_id()
         name = random.choice(pool) if pool else f'u{rid}'
         age = random.randint(18, 60)
         st.session_state.steps = demo.op_insert(rid, name, age)
         st.session_state.idx, st.session_state.play, st.session_state.results = 0, False, None
-        st.session_state.history.append(f'🌱 随机插入 (id={rid}, "{name}", {age})')
+        st.session_state.history.append(
+            f'🌱 随机插入({"乱序" if id_mode.startswith("乱序") else "正序"}) (id={rid}, "{name}", {age})')
     sb.caption('想自己指定 id / name 也行:')
     # key 随行数变化:每次插入后 number_input/text_input 重建,默认值刷新为 next_id/next_name
     ins_id = st.number_input('主键 id', 1, 99999, value=demo.next_id(),
