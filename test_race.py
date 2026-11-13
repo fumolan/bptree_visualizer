@@ -5,7 +5,7 @@ import warnings
 
 sys.path.insert(0, r'D:\github\bptree_visualizer')
 warnings.filterwarnings('ignore')
-from bptree_visualizer import BPlusTree, bp_height, render_height_race, render_race_layout, render_tree, _fmt_cn, _levels
+from bptree_visualizer import BPlusTree, Demo, bp_height, render_height_race, render_race_layout, render_tree, _fmt_cn, _levels
 
 # 层数公式:与手算对照,并用不等式验证"少一层必装不下、当前层必装得下"
 cases = [
@@ -57,4 +57,18 @@ for k in range(1, 81):
     t2.insert_traced(f'n{k}', k)
 svg2, h2 = render_tree({'M': 4, 'root': t2.root}, None, 's')
 assert svg2.startswith('<svg') and svg2.rstrip().endswith('</svg>') and h2 > 150 + 54 * (n_levels - 1), 's: 渲染异常'
+
+# 回归:op_random 的步骤快照必须双树齐全(tree=None 时快照只能走 base_* 传,曾误传 engine_snap 致主树 None 崩溃)
+d = Demo(4)
+d.load_preset()
+steps = d.op_random(6)
+assert steps and all(s['snap_pk'] is not None and s['snap_sec'] is not None for s in steps), \
+    'op_random 步骤快照缺失(会致页面 TypeError 崩溃)'
+# 顺带回归:其余操作的步骤快照也不允许 None(op_range 返回 (steps, results) 元组)
+for name, out in [('insert', d.op_insert(99, 'Zoe', 30)), ('search_id', d.op_search_id(1)),
+                  ('search_name', d.op_search_name('Ada')), ('range', d.op_range(1, 5)),
+                  ('delete', d.op_delete(99))]:
+    steps = out[0] if name == 'range' else out
+    for s in steps:
+        assert s['snap_pk'] is not None and s['snap_sec'] is not None, f'{name}: 步骤快照缺失'
 print('RACE OK — 层数公式 7 组用例(含不等式验证)+ 两张 SVG 冒烟 + 三层树渲染 + 数量级格式化全部通过')

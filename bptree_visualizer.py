@@ -512,7 +512,7 @@ class Demo:
             added.append(nid)
         desc = (f'随机插入 {len(added)} 行:id {added}。'
                 f'观察叶子页如何被逐渐填满 → 触发分裂 → 键上浮。') if added else '名字池用完了。'
-        return [self._mk(desc, None, self.pk.snap(), base_sec=self.sec.snap())]
+        return [self._mk(desc, None, base_pk=self.pk.snap(), base_sec=self.sec.snap())]
 
 
 # ============================================================
